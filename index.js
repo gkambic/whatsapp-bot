@@ -1,10 +1,8 @@
-// Permitir certificados SSL corporativos (solo para pruebas en redes con proxy)
-process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
-
 require('dotenv').config();
-const { Client, LocalAuth } = require('whatsapp-web.js');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
 const qrcode = require('qrcode-terminal');
 const OpenAI = require('openai');
+const pino = require('pino');
 
 // Verificar que la API key esté configurada
 if (!process.env.OPENAI_API_KEY || process.env.OPENAI_API_KEY.startsWith('sk-xxx')) {
@@ -17,54 +15,15 @@ if (!process.env.OPENAI_API_KEY || process.env.OPENAI_API_KEY.startsWith('sk-xxx
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const MODELO = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 const PERSONALIDAD = process.env.BOT_PERSONALITY ||
-    'Sos un asistente virtual amigable que responde por WhatsApp. Respondé de forma breve y clara, en español.';
+    'Sos un asistente virtual amigable que responde por WhatsApp. Respondé de forma breve y clara, en español. Usá emojis de vez en cuando. Si no sabés algo, decilo honestamente.';
 
-// Historial de conversaciones por usuario (se mantiene en memoria)
+// Historial de conversaciones por usuario
 const conversaciones = new Map();
-
-// IDs de mensajes ya respondidos (para evitar loops al escribirte a vos mismo)
-const mensajesRespondidos = new Set();
-
-// Prefijo invisible que el bot agrega a sus respuestas para identificarlas
-const BOT_PREFIX = '\u200B'; // Zero-width space
-
-// Buscar Chrome instalado en el sistema
-function findChromePath() {
-    const possiblePaths = [
-        'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-        'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-        process.env.LOCALAPPDATA + '\\Google\\Chrome\\Application\\chrome.exe',
-    ];
-    const fs = require('fs');
-    for (const p of possiblePaths) {
-        if (fs.existsSync(p)) return p;
-    }
-    return null;
-}
-
-const chromePath = findChromePath();
-if (!chromePath) {
-    console.error('❌ No se encontró Google Chrome instalado.');
-    console.error('   Instalalo desde https://www.google.com/chrome/');
-    process.exit(1);
-}
-console.log(`🌐 Usando Chrome: ${chromePath}`);
-
-// Crear cliente con autenticación local (guarda la sesión para no escanear QR cada vez)
-const client = new Client({
-    authStrategy: new LocalAuth(),
-    puppeteer: {
-        headless: true,
-        executablePath: chromePath,
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
-    }
-});
+const MAX_HISTORIAL = 20;
 
 // ============================================
-// CONFIGURACIÓN DE COMANDOS RÁPIDOS
+// COMANDOS RÁPIDOS
 // ============================================
-
-const MAX_HISTORIAL = 20; // Máximo de mensajes por conversación (para no gastar tokens de más)
 
 const comandosRapidos = {
     'menu': `📋 *MENÚ DEL BOT*\n\n` +
@@ -74,64 +33,27 @@ const comandosRapidos = {
             `💬 También podés *preguntarme cualquier cosa* y te respondo con IA.`,
     'info': '🤖 Soy un bot con IA que entiende tus preguntas.\nUso GPT para responder de forma inteligente.',
     'ayuda': '💡 *AYUDA*\n\nPodés escribirme cualquier pregunta y te respondo.\nNo hace falta usar comandos específicos, ¡simplemente hablame!\n\nComandos rápidos: *menu*, *hora*, *fecha*, *reset*',
+    'hola': '¡Hola! 👋 Soy un bot con IA. Escribí *menu* para ver lo que puedo hacer, o preguntame lo que quieras.',
+    'hi': '¡Hola! 👋 Soy un bot con IA. Escribí *menu* para ver lo que puedo hacer, o preguntame lo que quieras.',
+    'buenas': '¡Buenas! 👋 Soy un bot con IA. Escribí *menu* para ver lo que puedo hacer, o preguntame lo que quieras.',
 };
-
-// ============================================
-// EVENTOS DEL BOT
-// ============================================
-
-// Mostrar código QR en la terminal para escanear con WhatsApp
-client.on('qr', (qr) => {
-    console.log('📱 Escanea este código QR con WhatsApp:');
-    console.log('   (WhatsApp > Dispositivos vinculados > Vincular dispositivo)');
-    console.log('');
-    qrcode.generate(qr, { small: true });
-});
-
-// El bot se conectó exitosamente
-client.on('ready', () => {
-    console.log('');
-    console.log('✅ ¡Bot conectado y listo!');
-    console.log('📨 Esperando mensajes...');
-    console.log('');
-    console.log('Para detener el bot, presiona Ctrl+C');
-});
-
-// Se está cargando la sesión guardada
-client.on('authenticated', () => {
-    console.log('🔐 Autenticación exitosa');
-});
-
-// Error de autenticación
-client.on('auth_failure', (msg) => {
-    console.error('❌ Error de autenticación:', msg);
-});
-
-// Desconexión
-client.on('disconnected', (reason) => {
-    console.log('🔌 Bot desconectado:', reason);
-});
 
 // ============================================
 // FUNCIÓN DE IA
 // ============================================
 
 async function preguntarIA(userId, mensajeUsuario) {
-    // Obtener o crear historial de este usuario
     if (!conversaciones.has(userId)) {
         conversaciones.set(userId, []);
     }
     const historial = conversaciones.get(userId);
 
-    // Agregar mensaje del usuario al historial
     historial.push({ role: 'user', content: mensajeUsuario });
 
-    // Limitar historial para no gastar tokens de más
     while (historial.length > MAX_HISTORIAL) {
         historial.shift();
     }
 
-    // Llamar a OpenAI
     const respuesta = await openai.chat.completions.create({
         model: MODELO,
         messages: [
@@ -143,111 +65,137 @@ async function preguntarIA(userId, mensajeUsuario) {
     });
 
     const textoRespuesta = respuesta.choices[0].message.content.trim();
-
-    // Guardar respuesta en el historial
     historial.push({ role: 'assistant', content: textoRespuesta });
 
     return textoRespuesta;
 }
 
 // ============================================
-// LÓGICA DE MENSAJES
+// CONEXIÓN DE WHATSAPP
 // ============================================
 
-// Usamos 'message_create' en vez de 'message' para capturar también
-// los mensajes que te enviás a vos mismo (chat personal)
-client.on('message_create', async (message) => {
-    // Ignorar mensajes que no sean de texto
-    if (message.type !== 'chat') return;
+async function iniciarBot() {
+    const { state, saveCreds } = await useMultiFileAuthState('./auth_session');
 
-    // Log de debug
-    console.log(`🔍 DEBUG | fromMe: ${message.fromMe} | from: ${message.from} | to: ${message.to} | body: ${message.body.substring(0, 50)}`);
+    const sock = makeWASocket({
+        auth: state,
+        printQRInTerminal: false,
+        logger: pino({ level: 'silent' }),
+    });
 
-    const chat = await message.getChat();
+    // Evento: actualización de conexión
+    sock.ev.on('connection.update', (update) => {
+        const { connection, lastDisconnect, qr } = update;
 
-    // Ignorar grupos
-    if (chat.isGroup) return;
+        if (qr) {
+            console.log('');
+            console.log('📱 Escaneá este código QR con WhatsApp:');
+            console.log('   (WhatsApp > Dispositivos vinculados > Vincular dispositivo)');
+            console.log('');
+            qrcode.generate(qr, { small: true });
+        }
 
-    // Evitar responder a mensajes que ya procesamos (previene loops)
-    if (mensajesRespondidos.has(message.id._serialized)) return;
-    mensajesRespondidos.add(message.id._serialized);
+        if (connection === 'open') {
+            console.log('');
+            console.log('✅ ¡Bot conectado y listo!');
+            console.log('📨 Esperando mensajes...');
+            console.log('');
+        }
 
-    // Ignorar mensajes que empiezan con el prefijo del bot (son respuestas nuestras)
-    if (message.body.startsWith(BOT_PREFIX)) {
-        console.log('   ⏭️ Ignorando respuesta propia del bot');
-        return;
-    }
+        if (connection === 'close') {
+            const statusCode = lastDisconnect?.error?.output?.statusCode;
+            const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+            console.log(`🔌 Desconectado (código: ${statusCode})`);
+            if (shouldReconnect) {
+                console.log('🔄 Reconectando...');
+                iniciarBot();
+            } else {
+                console.log('❌ Sesión cerrada. Borrá la carpeta auth_session y volvé a escanear el QR.');
+            }
+        }
+    });
 
-    // Limpiar mensajes viejos del set (cada 100 mensajes)
-    if (mensajesRespondidos.size > 100) {
-        const entries = [...mensajesRespondidos];
-        entries.slice(0, 50).forEach(id => mensajesRespondidos.delete(id));
-    }
+    sock.ev.on('creds.update', saveCreds);
 
-    const texto = message.body.toLowerCase().trim();
-    const userId = message.from;
+    // Evento: mensajes nuevos
+    sock.ev.on('messages.upsert', async ({ messages, type }) => {
+        if (type !== 'notify') return;
 
-    console.log(`📩 Mensaje de ${userId}: ${message.body}`);
+        for (const msg of messages) {
+            // Ignorar mensajes propios
+            if (msg.key.fromMe) continue;
 
-    // Comando: reset (borrar historial)
-    if (texto === 'reset') {
-        conversaciones.delete(userId);
-        await chat.sendMessage(BOT_PREFIX + '🧹 Historial borrado. Empezamos de cero.');
-        console.log('   ✅ Historial reseteado');
-        return;
-    }
+            // Ignorar grupos
+            if (msg.key.remoteJid.endsWith('@g.us')) continue;
 
-    // Comandos rápidos
-    if (comandosRapidos[texto]) {
-        await chat.sendMessage(BOT_PREFIX + comandosRapidos[texto]);
-        console.log(`   ✅ Comando rápido: ${texto}`);
-        return;
-    }
+            // Obtener texto del mensaje
+            const textoMensaje = msg.message?.conversation ||
+                                 msg.message?.extendedTextMessage?.text;
+            if (!textoMensaje) continue;
 
-    // Comando especial: hora
-    if (texto === 'hora') {
-        const hora = new Date().toLocaleTimeString('es-AR', {
-            hour: '2-digit',
-            minute: '2-digit',
-            second: '2-digit'
-        });
-        await chat.sendMessage(BOT_PREFIX + `🕐 Son las *${hora}*`);
-        console.log('   ✅ Respondido con: hora');
-        return;
-    }
+            const userId = msg.key.remoteJid;
+            const texto = textoMensaje.toLowerCase().trim();
 
-    // Comando especial: fecha
-    if (texto === 'fecha') {
-        const fecha = new Date().toLocaleDateString('es-AR', {
-            weekday: 'long',
-            year: 'numeric',
-            month: 'long',
-            day: 'numeric'
-        });
-        await chat.sendMessage(BOT_PREFIX + `📅 Hoy es *${fecha}*`);
-        console.log('   ✅ Respondido con: fecha');
-        return;
-    }
+            console.log(`📩 Mensaje de ${userId}: ${textoMensaje}`);
 
-    // Para todo lo demás → responder con IA
-    try {
-        await chat.sendStateTyping(); // Mostrar "escribiendo..."
-        const respuestaIA = await preguntarIA(userId, message.body);
-        await chat.sendMessage(BOT_PREFIX + respuestaIA);
-        console.log(`   🤖 IA respondió (${respuestaIA.length} chars)`);
-    } catch (error) {
-        console.error('   ❌ Error de IA:', error.message);
-        await chat.sendMessage(BOT_PREFIX + '⚠️ Hubo un error al procesar tu mensaje. Intentá de nuevo en unos segundos.');
-    }
-});
+            // Marcar como leído
+            await sock.readMessages([msg.key]);
+
+            // Comando: reset
+            if (texto === 'reset') {
+                conversaciones.delete(userId);
+                await sock.sendMessage(userId, { text: '🧹 Historial borrado. Empezamos de cero.' });
+                console.log('   ✅ Historial reseteado');
+                continue;
+            }
+
+            // Comandos rápidos
+            if (comandosRapidos[texto]) {
+                await sock.sendMessage(userId, { text: comandosRapidos[texto] });
+                console.log(`   ✅ Comando rápido: ${texto}`);
+                continue;
+            }
+
+            // Comando: hora
+            if (texto === 'hora') {
+                const hora = new Date().toLocaleTimeString('es-AR', {
+                    hour: '2-digit', minute: '2-digit', second: '2-digit'
+                });
+                await sock.sendMessage(userId, { text: `🕐 Son las *${hora}*` });
+                console.log('   ✅ Respondido con: hora');
+                continue;
+            }
+
+            // Comando: fecha
+            if (texto === 'fecha') {
+                const fecha = new Date().toLocaleDateString('es-AR', {
+                    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
+                });
+                await sock.sendMessage(userId, { text: `📅 Hoy es *${fecha}*` });
+                console.log('   ✅ Respondido con: fecha');
+                continue;
+            }
+
+            // Para todo lo demás → IA
+            try {
+                await sock.sendPresenceUpdate('composing', userId);
+                const respuestaIA = await preguntarIA(userId, textoMensaje);
+                await sock.sendMessage(userId, { text: respuestaIA });
+                console.log(`   🤖 IA respondió (${respuestaIA.length} chars)`);
+            } catch (error) {
+                console.error('   ❌ Error de IA:', error.message);
+                await sock.sendMessage(userId, { text: '⚠️ Hubo un error al procesar tu mensaje. Intentá de nuevo en unos segundos.' });
+            }
+        }
+    });
+}
 
 // ============================================
-// INICIAR EL BOT
+// INICIAR
 // ============================================
 
 console.log('');
 console.log('🚀 Iniciando bot de WhatsApp...');
-console.log('   Esto puede tardar unos segundos la primera vez.');
 console.log('');
 
-client.initialize();
+iniciarBot();
