@@ -11,7 +11,7 @@ let apiKey, baseURL, MODELO;
 if (PROVEEDOR === 'gemini') {
     apiKey = process.env.GEMINI_API_KEY;
     baseURL = 'https://generativelanguage.googleapis.com/v1beta/openai/';
-    MODELO = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
+    MODELO = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
     if (!apiKey) {
         console.error('❌ Falta configurar GEMINI_API_KEY en los Secrets.');
         console.error('   Conseguila gratis en: https://aistudio.google.com/apikey');
@@ -169,7 +169,8 @@ async function iniciarBot() {
                 await sock.sendMessage(userId, { text: respuestaIA });
                 console.log(`   🤖 IA respondió (${respuestaIA.length} chars)`);
             } catch (error) {
-                console.error('   ❌ Error de IA:', error.message);
+                console.error('   ❌ Error de IA:', error.status, error.message);
+                if (error.error) console.error('      detalle:', JSON.stringify(error.error));
                 let mensajeError = '⚠️ Hubo un error al procesar tu mensaje. Intentá de nuevo en unos segundos.';
                 if (error.status === 429) {
                     if (/quota|billing|insufficient/i.test(error.message)) {
