@@ -1,19 +1,37 @@
 require('dotenv').config();
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers } = require('@whiskeysockets/baileys');
 const qrcode = require('qrcode-terminal');
+const QRCode = require('qrcode');
 const OpenAI = require('openai');
 const pino = require('pino');
 
-// Verificar que la API key esté configurada
-if (!process.env.OPENAI_API_KEY || process.env.OPENAI_API_KEY.startsWith('sk-xxx')) {
-    console.error('❌ Falta configurar OPENAI_API_KEY en el archivo .env');
-    console.error('   Conseguí tu API key en: https://platform.openai.com/api-keys');
-    process.exit(1);
+// Elegir proveedor: groq (default) u openai
+const PROVEEDOR = (process.env.AI_PROVIDER || 'groq').toLowerCase();
+
+let apiKey, baseURL, MODELO;
+if (PROVEEDOR === 'groq') {
+    apiKey = process.env.GROQ_API_KEY;
+    baseURL = 'https://api.groq.com/openai/v1';
+    MODELO = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
+    if (!apiKey) {
+        console.error('❌ Falta configurar GROQ_API_KEY en los Secrets.');
+        console.error('   Conseguí tu API key en: https://console.groq.com');
+        process.exit(1);
+    }
+} else {
+    apiKey = process.env.OPENAI_API_KEY;
+    baseURL = undefined;
+    MODELO = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+    if (!apiKey || apiKey.startsWith('sk-xxx')) {
+        console.error('❌ Falta configurar OPENAI_API_KEY en los Secrets.');
+        console.error('   Conseguí tu API key en: https://platform.openai.com/api-keys');
+        process.exit(1);
+    }
 }
 
-// Configurar OpenAI
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-const MODELO = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+console.log(`🧠 Proveedor de IA: ${PROVEEDOR} | Modelo: ${MODELO}`);
+
+const openai = new OpenAI({ apiKey, baseURL });
 const PERSONALIDAD = process.env.BOT_PERSONALITY ||
     'Sos un asistente virtual amigable que responde por WhatsApp. Respondé de forma breve y clara, en español. Usá emojis de vez en cuando. Si no sabés algo, decilo honestamente.';
 
@@ -76,10 +94,12 @@ async function preguntarIA(userId, mensajeUsuario) {
 
 async function iniciarBot() {
     const { state, saveCreds } = await useMultiFileAuthState('./auth_session');
+    const { version } = await fetchLatestBaileysVersion();
 
     const sock = makeWASocket({
+        version,
         auth: state,
-        printQRInTerminal: false,
+        browser: Browsers.ubuntu('Chrome'),
         logger: pino({ level: 'silent' }),
     });
 
@@ -93,6 +113,9 @@ async function iniciarBot() {
             console.log('   (WhatsApp > Dispositivos vinculados > Vincular dispositivo)');
             console.log('');
             qrcode.generate(qr, { small: true });
+            QRCode.toFile('./qr.png', qr, { width: 400, margin: 2 })
+                .then(() => console.log('🖼️  QR guardado en qr.png'))
+                .catch(err => console.error('Error guardando QR:', err.message));
         }
 
         if (connection === 'open') {
@@ -122,8 +145,7 @@ async function iniciarBot() {
         if (type !== 'notify') return;
 
         for (const msg of messages) {
-            // Ignorar mensajes propios
-            if (msg.key.fromMe) continue;
+            console.log(`🔎 Evento de mensaje | fromMe=${msg.key.fromMe} | jid=${msg.key.remoteJid} | tipo=${Object.keys(msg.message || {}).join(',') || 'vacío'}`);
 
             // Ignorar grupos
             if (msg.key.remoteJid.endsWith('@g.us')) continue;
@@ -184,7 +206,19 @@ async function iniciarBot() {
                 console.log(`   🤖 IA respondió (${respuestaIA.length} chars)`);
             } catch (error) {
                 console.error('   ❌ Error de IA:', error.message);
-                await sock.sendMessage(userId, { text: '⚠️ Hubo un error al procesar tu mensaje. Intentá de nuevo en unos segundos.' });
+                let mensajeError = '⚠️ Hubo un error al procesar tu mensaje. Intentá de nuevo en unos segundos.';
+                if (error.status === 429) {
+                    if (/quota|billing|insufficient/i.test(error.message)) {
+                        mensajeError = `⚠️ La cuenta de ${PROVEEDOR} no tiene crédito disponible.`;
+                    } else {
+                        mensajeError = '⚠️ Demasiadas consultas en poco tiempo. Esperá unos segundos y volvé a probar.';
+                    }
+                } else if (error.status === 401) {
+                    mensajeError = `⚠️ La API key de ${PROVEEDOR} es inválida o fue revocada. Actualizala en los Secrets de Replit.`;
+                } else if (error.status === 404 || /model/i.test(error.message)) {
+                    mensajeError = `⚠️ El modelo "${MODELO}" no está disponible. Cambiá el modelo en los Secrets.`;
+                }
+                await sock.sendMessage(userId, { text: mensajeError });
             }
         }
     });
