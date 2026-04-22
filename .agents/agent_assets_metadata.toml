@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "BaqjQPBb6MDu1llrwF1G5"
+uri = "file://qr.png"
+type = "image"
+title = "QR para vincular WhatsApp (rama gemini)"
