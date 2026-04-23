@@ -1,8 +1,8 @@
 # 🤖 WhatsApp Bot con IA
 
-Bot de WhatsApp que responde de forma inteligente usando un modelo de IA. Soporta **tres proveedores intercambiables**: **Google Gemini** (por defecto en esta rama), **Groq** y **OpenAI**. Funciona corriendo en Replit (o en cualquier server Node.js) y se vincula a tu WhatsApp escaneando un código QR una sola vez.
+Bot de WhatsApp que responde de forma inteligente usando un modelo de IA. Soporta **tres proveedores intercambiables**: **Google Gemini**, **Groq** y **OpenAI**. Funciona corriendo en Replit (o en cualquier server Node.js) y se vincula a tu WhatsApp escaneando un código QR una sola vez.
 
-> ℹ️ Este repo tiene tres ramas activas: `main` (OpenAI), `groq` (Groq) y `gemini` (esta). El código es prácticamente el mismo: cambia el proveedor por defecto y los Secrets requeridos.
+> ℹ️ El proveedor se elige con la variable `AI_PROVIDER`. Cada rama del repo (`main`, `groq`, `gemini`) tiene un default distinto, pero el código es prácticamente el mismo.
 
 ---
 
@@ -42,7 +42,7 @@ Bot de WhatsApp que responde de forma inteligente usando un modelo de IA. Soport
 
 | Variable          | Descripción                                                                                  | Default                  |
 |-------------------|----------------------------------------------------------------------------------------------|--------------------------|
-| `AI_PROVIDER`     | Qué proveedor usar: `gemini`, `groq` u `openai`.                                            | `gemini` (en esta rama)  |
+| `AI_PROVIDER`     | Qué proveedor usar: `gemini`, `groq` u `openai`.                                            | depende de la rama       |
 | `GEMINI_API_KEY`  | API key de Google AI Studio. Requerida si `AI_PROVIDER=gemini`.                              | —                        |
 | `GEMINI_MODEL`    | Modelo de Gemini.                                                                            | `gemini-1.5-flash`       |
 | `GROQ_API_KEY`    | API key de Groq. Requerida si `AI_PROVIDER=groq`.                                            | —                        |
@@ -57,8 +57,8 @@ Bot de WhatsApp que responde de forma inteligente usando un modelo de IA. Soport
 
 ## Cómo correrlo en Replit
 
-1. Asegurate de estar en la rama deseada (`main`, `groq` o `gemini`).
-2. Cargá el Secret correspondiente a esa rama (ver tabla de arriba).
+1. Asegurate de estar en la rama deseada (`main`, `groq` o `gemini`) o setteá `AI_PROVIDER` a mano.
+2. Cargá el Secret correspondiente al proveedor elegido (ver tabla de arriba).
 3. El workflow `WhatsApp Bot` arranca solo con `node index.js`.
 4. Cuando aparezca un QR (consola y archivo `qr.png`), abrí WhatsApp en tu celular → **Configuración → Dispositivos vinculados → Vincular dispositivo** y escanealo.
 5. Listo: vas a ver `✅ ¡Bot conectado y listo!`. Ahora cualquier mensaje que llegue al WhatsApp vinculado va a recibir respuesta del bot.
@@ -72,9 +72,10 @@ Bot de WhatsApp que responde de forma inteligente usando un modelo de IA. Soport
 ```bash
 git clone https://github.com/gkambic/whatsapp-bot.git
 cd whatsapp-bot
-git checkout gemini   # o groq, o main
+git checkout groq   # o gemini, o main
 npm install
-echo "GEMINI_API_KEY=tu_key_aca" > .env
+echo "AI_PROVIDER=groq" > .env
+echo "GROQ_API_KEY=tu_key_aca" >> .env
 npm start
 ```
 
@@ -110,4 +111,4 @@ Para entender por qué cada parte está escrita como está, mirá [`ARCHITECTURE
 - WhatsApp **rota el QR cada ~20 segundos**: si no llegás a escanearlo, se genera otro automáticamente.
 - Después de vincular por primera vez, WhatsApp suele cerrar y reabrir la conexión una vez (código `515`); es normal y se reconecta solo.
 - WhatsApp puede **bloquear el número** si detecta uso masivo o automatizado abusivo. Este bot es para uso personal/educativo.
-- En la rama `gemini`, si Google reporta `429` muy seguido, probá cambiar `GEMINI_MODEL` a otro (`gemini-2.0-flash`, `gemini-2.5-flash-preview-05-20`, etc.) o caer a Groq.
+- Si el proveedor reporta `429` (rate limit) muy seguido, probá cambiar de modelo (otra variante de Gemini o de Llama en Groq) o cambiar de proveedor con `AI_PROVIDER`.
